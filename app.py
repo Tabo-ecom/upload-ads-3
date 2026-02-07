@@ -1,9 +1,9 @@
-import streamlit as st  # 👈 SIEMPRE PRIMERO
+import streamlit as st
 import requests
 import json
 import time
 import pandas as pd
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, date
 
 # ==============================================================================
 # ⚙️ CONFIGURACIÓN DE PÁGINA
@@ -113,25 +113,41 @@ class FBAdsManager:
         if "id" not in res_ad: raise Exception(f"Error Anuncio: {res_ad.get('error', {}).get('message')}")
         return True
 
-    # --- VIGILANTE (CORREGIDO) ---
-    def get_insights(self, level, acc_id, date_preset="maximum"):
-        # ⚠️ CORRECCIÓN CLAVE:
-        # En lugar de pedir '/insights', pedimos '/ads' (o campañas/adsets)
-        # y solicitamos los 'insights' como un CAMPO anidado.
-        # Esto permite traer ID, NOMBRE, STATUS e INSIGHTS en una sola llamada válida.
+    # --- VIGILANTE MEJORADO ---
+    def get_insights_custom(self, level, acc_id, time_params):
+        """
+        Trae insights con soporte para Campaign Name y Fechas personalizadas.
+        time_params: puede ser {'date_preset': 'today'} O {'time_range': {'since': '...', 'until': '...'}}
+        """
+        endpoint = f"{level}s"
         
-        endpoint = f"{level}s" # campaigns, adsets, ads
+        # Pedimos campaign_name explícitamente para mostrarlo en la tabla
+        fields = "id,name,campaign_name,status,insights"
         
-        # Campos que queremos del objeto + métricas anidadas
-        fields = f"id,name,status,insights.date_preset({date_preset}){{spend,impressions,clicks,actions,action_values,cpc,ctr,cpm}}"
+        # Campos de insights anidados
+        insights_fields = "spend,impressions,clicks,actions,action_values,cpc,ctr,cpm"
+        
+        # Construcción de la consulta anidada
+        # Ejemplo: insights.date_preset(today){spend,actions...}
+        
+        time_key = list(time_params.keys())[0] # date_preset o time_range
+        time_val = list(time_params.values())[0]
+        
+        if time_key == 'time_range':
+            # Formato especial para JSON en URL
+            time_str = json.dumps(time_val)
+            query_insights = f"insights.time_range({time_str}){{{insights_fields}}}"
+        else:
+            query_insights = f"insights.date_preset({time_val}){{{insights_fields}}}"
+
+        final_fields = f"{fields},{query_insights}"
         
         params = {
             "access_token": self.token,
-            "fields": fields,
+            "fields": final_fields,
             "limit": 500
         }
         
-        # Llamada a: act_123/ads?fields=name,status,insights...
         res = requests.get(f"{BASE_URL}/{acc_id}/{endpoint}", params=params).json()
         
         if "error" in res: 
@@ -147,7 +163,7 @@ class FBAdsManager:
         return new_status
 
 # ==============================================================================
-# 🖥️ 4. INTERFAZ
+# 🖥️ 4. INTERFAZ GRÁFICA
 # ==============================================================================
 
 with st.sidebar:
@@ -170,8 +186,9 @@ with st.sidebar:
         try:
             manager = FBAdsManager(fb_token)
             accounts = manager.get_my_ad_accounts()
+            # Este acc_name lo usamos para el Vigilante. El lanzador tiene su propio selector multi-cuenta.
             if accounts:
-                acc_name = st.selectbox("Cuenta Principal (Para Vigilante)", list(accounts.keys()))
+                acc_name = st.selectbox("Cuenta Principal (Vigilante)", list(accounts.keys()))
                 ad_account_id = accounts[acc_name]
         except:
             st.error("Token FB Inválido")
@@ -247,7 +264,7 @@ if menu == "🚀 Lanzador de Ads":
             st.error("❌ Faltan datos.")
         else:
             status_main = st.empty()
-            url_final = f"https://{url_producto}" if not url_producto.startswith("http") else url_producto
+            url_final = f"https://{url_producto}" if not url_producto.startswith("http") else url_final
             start_time_unix = int(datetime.combine(fecha_inicio, dt_time(5, 0, 0)).timestamp())
             
             target_genders = []
@@ -305,86 +322,140 @@ elif menu == "👁️ El Vigilante (Datos)":
         st.warning("Conecta tu cuenta primero.")
         st.stop()
         
-    col_f1, col_f2 = st.columns(2)
-    rango_fecha = col_f1.selectbox("📅 Fecha", ["today", "yesterday", "last_3d", "last_7d", "maximum"], index=1)
-    nivel = col_f2.selectbox("🔍 Ver por", ["campaign", "adset", "ad"], index=0)
+    # --- FILTROS MEJORADOS ---
+    col_f1, col_f2 = st.columns([2, 1])
     
-    if st.button("🔄 Analizar Datos"):
-        with st.spinner("Trayendo datos de Facebook..."):
-            raw_data = manager.get_insights(nivel, ad_account_id, date_preset=rango_fecha)
+    with col_f1:
+        # Selector Híbrido: Atajos + Personalizado
+        tipo_fecha = st.selectbox("📅 Rango de Fechas", 
+                                  ["Hoy", "Ayer", "Últimos 3 días", "Últimos 7 días", "Personalizado"], 
+                                  index=0)
+        
+        # Lógica de fechas
+        time_params = {}
+        if tipo_fecha == "Hoy": time_params = {'date_preset': 'today'}
+        elif tipo_fecha == "Ayer": time_params = {'date_preset': 'yesterday'}
+        elif tipo_fecha == "Últimos 3 días": time_params = {'date_preset': 'last_3d'}
+        elif tipo_fecha == "Últimos 7 días": time_params = {'date_preset': 'last_7d'}
+        elif tipo_fecha == "Personalizado":
+            cols_d = st.columns(2)
+            d_start = cols_d[0].date_input("Desde", date.today() - timedelta(days=7))
+            d_end = cols_d[1].date_input("Hasta", date.today())
+            time_params = {'time_range': {'since': str(d_start), 'until': str(d_end)}}
+
+    with col_f2:
+        nivel = st.selectbox("🔍 Analizar por", ["campaign", "adset", "ad"], index=0)
+    
+    st.divider()
+
+    if st.button("🔄 Analizar Datos", type="primary"):
+        with st.spinner("Analizando métricas financieras..."):
+            
+            # Llamamos a la nueva función custom que soporta time_range
+            raw_data = manager.get_insights_custom(nivel, ad_account_id, time_params)
             
             if not raw_data:
-                st.warning("No hay datos para mostrar.")
+                st.warning("No se encontraron datos para este periodo.")
             else:
                 rows = []
-                # PROCESAMIENTO DE LA NUEVA ESTRUCTURA
                 for item in raw_data:
-                    # Datos básicos del objeto
+                    # Datos del objeto
                     obj_id = item.get("id")
                     obj_name = item.get("name")
                     obj_status = item.get("status")
-                    
-                    # Insights (Vienen anidados ahora)
-                    insights_data = item.get("insights", {}).get("data", [{}])[0]
-                    
+                    camp_name = item.get("campaign_name", "N/A") # Nombre de la campaña
+                    if nivel == "campaign": camp_name = obj_name # Si vemos campañas, el nombre es el mismo
+
+                    # Insights (si existen, a veces items pausados no traen insights)
+                    insights_data = {}
+                    if "insights" in item and "data" in item["insights"]:
+                        insights_data = item["insights"]["data"][0]
+
                     spend = float(insights_data.get("spend", 0))
                     impressions = int(insights_data.get("impressions", 0))
-                    clicks = int(insights_data.get("clicks", 0))
                     
-                    # Ventas
+                    # --- CÁLCULO DE COMPRAS Y FACTURADO ---
                     purchases = 0
-                    purchases_val = 0.0
+                    facturado = 0.0 # Revenue
+                    
                     if "actions" in insights_data:
                         for act in insights_data["actions"]:
-                            if act["action_type"] == "purchase": purchases = int(act["value"])
+                            if act["action_type"] == "purchase": 
+                                purchases = int(act["value"])
+                    
                     if "action_values" in insights_data:
                         for val in insights_data["action_values"]:
-                            if val["action_type"] == "purchase": purchases_val = float(val["value"])
+                            if val["action_type"] == "purchase": 
+                                facturado = float(val["value"])
                     
-                    cpa = spend / purchases if purchases > 0 else 0
-                    roas = purchases_val / spend if spend > 0 else 0
-                    ctr = float(insights_data.get("ctr", 0))
+                    # --- KPIs ---
+                    # Costo por Compra = Gasto / Compras
+                    costo_por_compra = spend / purchases if purchases > 0 else 0
+                    
+                    # ROAS = Facturado / Gasto
+                    roas = facturado / spend if spend > 0 else 0
                     
                     rows.append({
                         "ID": obj_id,
-                        "Estado": obj_status,
+                        "Campaña": camp_name, # Nueva columna
                         "Nombre": obj_name,
+                        "Estado": obj_status,
                         "Gasto": spend,
-                        "Ventas": purchases,
-                        "CPA": cpa,
-                        "ROAS": roas,
-                        "CTR": ctr
+                        "Facturado": facturado, # Nueva columna
+                        "Costo x Compra": costo_por_compra, # Renombrado
+                        "Compras": purchases,
+                        "ROAS": roas
                     })
                 
                 df = pd.DataFrame(rows)
                 
-                k1, k2, k3, k4 = st.columns(4)
+                # --- VISUALIZACIÓN DE MÉTRICAS GLOBALES ---
+                st.markdown("### 📊 Resumen Financiero")
+                k1, k2, k3, k4, k5 = st.columns(5)
                 k1.metric("Gasto Total", f"${df['Gasto'].sum():,.0f}")
-                k2.metric("Ventas Totales", f"{df['Ventas'].sum()}")
-                k3.metric("CPA Promedio", f"${df['CPA'].mean():,.0f}")
-                k4.metric("ROAS Promedio", f"{df['ROAS'].mean():.2f}")
+                k2.metric("Facturado (Total)", f"${df['Facturado'].sum():,.0f}")
+                k3.metric("Compras Totales", f"{df['Compras'].sum()}")
                 
-                def color_cpa(val):
-                    if val == 0: return 'color: black'
-                    if val > 40000: return 'color: red' 
-                    if val < 20000: return 'color: green'
-                    return 'color: orange'
+                # Promedios ponderados
+                avg_cpp = df['Gasto'].sum() / df['Compras'].sum() if df['Compras'].sum() > 0 else 0
+                avg_roas = df['Facturado'].sum() / df['Gasto'].sum() if df['Gasto'].sum() > 0 else 0
                 
-                st.subheader("📊 Tabla de Rendimiento")
+                k4.metric("Costo x Compra (Avg)", f"${avg_cpp:,.0f}")
+                k5.metric("ROAS Global", f"{avg_roas:.2f}x")
+                
+                # --- TABLA DETALLADA ---
+                def color_cpp(val):
+                    if val == 0: return 'color: gray'
+                    if val > 40000: return 'color: red; font-weight: bold' 
+                    if val < 20000: return 'color: green; font-weight: bold'
+                    return 'color: black'
+                
+                st.subheader("📋 Detalle de Rendimiento")
+                
+                # Ordenar columnas
+                cols_order = ["Estado", "Campaña", "Nombre", "Gasto", "Facturado", "Compras", "Costo x Compra", "ROAS"]
+                
                 st.dataframe(
-                    df.style.applymap(color_cpa, subset=['CPA'])
-                    .format({"Gasto": "${:,.0f}", "CPA": "${:,.0f}", "ROAS": "{:.2f}", "CTR": "{:.2f}%"}),
-                    use_container_width=True
+                    df[cols_order].style.applymap(color_cpp, subset=['Costo x Compra'])
+                    .format({
+                        "Gasto": "${:,.0f}", 
+                        "Facturado": "${:,.0f}", 
+                        "Costo x Compra": "${:,.0f}", 
+                        "ROAS": "{:.2f}x"
+                    }),
+                    use_container_width=True,
+                    height=500
                 )
                 
+                # --- CONTROL ---
                 st.divider()
-                st.subheader("👮‍♂️ Centro de Control")
+                st.subheader("👮‍♂️ Acciones Rápidas")
                 col_c1, col_c2 = st.columns([3, 1])
-                target_name = col_c1.selectbox("Selecciona para Cambiar Estado", df['Nombre'].tolist())
+                target_name = col_c1.selectbox("Selecciona elemento para Apagar/Prender:", df['Nombre'].tolist())
                 
-                if col_c2.button("🚨 Apagar / Prender"):
+                if col_c2.button("🚨 Cambiar Estado"):
                     target_row = df[df['Nombre'] == target_name].iloc[0]
                     new_st = manager.toggle_status(target_row['ID'], target_row['Estado'])
-                    st.success(f"Cambiado a: {new_st}")
+                    st.success(f"✅ Estado actualizado a: {new_st}")
                     time.sleep(1)
                     st.experimental_rerun()
