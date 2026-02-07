@@ -1,4 +1,4 @@
-import streamlit as st  # <--- ESTA LÍNEA DEBE SER LA PRIMERA
+import streamlit as st  # 👈 SIEMPRE PRIMERO
 import requests
 import json
 import time
@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta, time as dt_time
 
 # ==============================================================================
-# ⚙️ CONFIGURACIÓN DE PÁGINA (DEBE IR AQUÍ, AL PRINCIPIO)
+# ⚙️ CONFIGURACIÓN DE PÁGINA
 # ==============================================================================
 st.set_page_config(
     page_title="GL Ads Suite", 
@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # ==============================================================================
-# 🧠 1. CONFIGURACIÓN MAESTRA (Tus Tiendas)
+# 🧠 1. CONFIGURACIÓN MAESTRA
 # ==============================================================================
 STORE_CONFIG = {
     'TABO': { 'pixelId': '4560468307512217', 'pageId': '243219548872531', 'currency': 'COP', 'country': 'COLOMBIA', 'country_code': 'CO' },
@@ -29,7 +29,7 @@ API_VERSION = "v22.0"
 BASE_URL = f"https://graph.facebook.com/{API_VERSION}"
 
 # ==============================================================================
-# 🤖 2. AGENTE DE IA (Generador de Copy)
+# 🤖 2. AGENTE DE IA
 # ==============================================================================
 def generar_copy_ia(api_key, nombre_producto, descripcion):
     if not api_key: return {"headline": "¡Pide y Paga en Casa!", "body": "⚠️ Falta API Key."}
@@ -48,7 +48,7 @@ def generar_copy_ia(api_key, nombre_producto, descripcion):
         return {"headline": "Error IA", "body": str(e)}
 
 # ==============================================================================
-# 🛠️ 3. CLASE DE GESTIÓN FACEBOOK (Lanzador + Vigilante)
+# 🛠️ 3. CLASE DE GESTIÓN FACEBOOK
 # ==============================================================================
 class FBAdsManager:
     def __init__(self, token):
@@ -60,7 +60,7 @@ class FBAdsManager:
         res = requests.get(url, params=params).json()
         return {f"{acc.get('name')} ({acc.get('currency')})": f"act_{acc['account_id']}" for acc in res.get('data', [])} if "data" in res else {}
 
-    # --- FUNCIONES DE LANZAMIENTO ---
+    # --- LANZAMIENTO ---
     def upload_media(self, ad_account_id, file_obj=None, file_url=None, file_type="image/jpeg"):
         endpoint = "advideos" if "video" in file_type else "adimages"
         url = f"{BASE_URL}/{ad_account_id}/{endpoint}"
@@ -113,17 +113,27 @@ class FBAdsManager:
         if "id" not in res_ad: raise Exception(f"Error Anuncio: {res_ad.get('error', {}).get('message')}")
         return True
 
-    # --- FUNCIONES DEL VIGILANTE (Analytics) ---
+    # --- VIGILANTE (CORREGIDO) ---
     def get_insights(self, level, acc_id, date_preset="maximum"):
-        fields = ["id", "name", "status", "spend", "impressions", "clicks", "actions", "action_values", "cpc", "ctr", "cpm"]
+        # ⚠️ CORRECCIÓN CLAVE:
+        # En lugar de pedir '/insights', pedimos '/ads' (o campañas/adsets)
+        # y solicitamos los 'insights' como un CAMPO anidado.
+        # Esto permite traer ID, NOMBRE, STATUS e INSIGHTS en una sola llamada válida.
+        
+        endpoint = f"{level}s" # campaigns, adsets, ads
+        
+        # Campos que queremos del objeto + métricas anidadas
+        fields = f"id,name,status,insights.date_preset({date_preset}){{spend,impressions,clicks,actions,action_values,cpc,ctr,cpm}}"
+        
         params = {
             "access_token": self.token,
-            "level": level,
-            "date_preset": date_preset,
-            "fields": ",".join(fields),
+            "fields": fields,
             "limit": 500
         }
-        res = requests.get(f"{BASE_URL}/{acc_id}/insights", params=params).json()
+        
+        # Llamada a: act_123/ads?fields=name,status,insights...
+        res = requests.get(f"{BASE_URL}/{acc_id}/{endpoint}", params=params).json()
+        
         if "error" in res: 
             st.error(f"Error API: {res['error']['message']}")
             return []
@@ -137,18 +147,14 @@ class FBAdsManager:
         return new_status
 
 # ==============================================================================
-# 🖥️ 4. INTERFAZ GRÁFICA (EL CEREBRO DE LA APP)
+# 🖥️ 4. INTERFAZ
 # ==============================================================================
 
-# --- BARRA LATERAL (LOGIN Y MENÚ) ---
 with st.sidebar:
     st.title("⚡ GL Suite")
-    
-    # MENÚ DE NAVEGACIÓN
     menu = st.radio("📍 Navegación", ["🚀 Lanzador de Ads", "👁️ El Vigilante (Datos)"])
     st.divider()
     
-    # LOGIN
     st.subheader("🔑 Credenciales")
     fb_secret = st.secrets.get("FB_ACCESS_TOKEN", "")
     oa_secret = st.secrets.get("OPENAI_API_KEY", "")
@@ -170,21 +176,18 @@ with st.sidebar:
         except:
             st.error("Token FB Inválido")
 
-# ==============================================================================
-# 🚀 MÓDULO 1: EL LANZADOR
-# ==============================================================================
+# --- MÓDULO LANZADOR ---
 if menu == "🚀 Lanzador de Ads":
     st.title("🚀 Lanzador Multi-Cuenta")
     
     if not manager:
-        st.warning("👈 Conecta tu cuenta de Facebook en la barra lateral.")
+        st.warning("👈 Conecta tu cuenta.")
         st.stop()
 
     c1, c2 = st.columns([1, 1.2])
 
     with c1:
         st.subheader("1. Configuración")
-        # Aquí permitimos seleccionar VARIAS cuentas para lanzar
         acc_names_sel = st.multiselect("🎯 Cuentas Destino", list(accounts.keys()), default=[acc_name])
         marcas_sel = st.multiselect("Marcas/Países", list(STORE_CONFIG.keys()))
         
@@ -225,7 +228,6 @@ if menu == "🚀 Lanzador de Ads":
                         final_name = f"Enlace {i+1} - {producto}"
                         files_to_process.append({"type": "url", "url": url.strip(), "mime": mime, "name": final_name})
 
-        # IA Copy
         if st.button("✨ Generar Copy IA"):
             if not oa_token: st.error("Falta API Key OpenAI.")
             else:
@@ -255,13 +257,11 @@ if menu == "🚀 Lanzador de Ads":
             for acc_n in acc_names_sel:
                 curr_acc_id = accounts[acc_n]
                 st.markdown(f"### 📡 Cuenta: {acc_n}")
-                
                 try:
                     for marca in marcas_sel:
                         cfg = STORE_CONFIG[marca]
                         pais = cfg['country']
                         
-                        # 1. Campaña
                         c_name = f"{pais} - {producto} - {tipo_puja[:4]} - {datetime.now().strftime('%d/%m')}"
                         p_camp = {'name': c_name, 'objective': 'OUTCOME_SALES', 'status': 'PAUSED', 'special_ad_categories': '[]', 'access_token': fb_token}
                         if "CBO" in tipo_puja:
@@ -272,55 +272,32 @@ if menu == "🚀 Lanzador de Ads":
                         if "id" not in res_c: raise Exception(res_c)
                         camp_id = res_c['id']
 
-                        # Configs AdSet
                         attr = json.dumps([{"event_type": "CLICK_THROUGH", "window_days": 7}, {"event_type": "VIEW_THROUGH", "window_days": 1}])
                         tgt = {'geo_locations': {'countries': [cfg['country_code']]}, 'age_min': 18, 'age_max': 65}
                         if target_genders: tgt['genders'] = target_genders
                         
-                        # Estrategia TESTEO
                         if tipo_puja == "TESTEO_CREATIVOS":
                             for idx, item in enumerate(files_to_process):
                                 st.write(f"➡️ Subiendo '{item['name']}' a {pais}...")
                                 media = manager.upload_media(curr_acc_id, file_obj=item.get("obj"), file_url=item.get("url"), file_type=item["mime"])
-                                
-                                p_as = {
-                                    'name': f"{pais} - TEST {idx+1} ({item['name']})", 'campaign_id': camp_id, 'status': 'PAUSED',
-                                    'targeting': json.dumps(tgt), 'start_time': start_time_unix,
-                                    'billing_event': 'IMPRESSIONS', 'optimization_goal': 'OFFSITE_CONVERSIONS',
-                                    'promoted_object': json.dumps({'pixel_id': cfg['pixelId'], 'custom_event_type': 'PURCHASE'}),
-                                    'destination_type': 'WEBSITE', 'attribution_spec': attr,
-                                    'bid_strategy': 'LOWEST_COST_WITHOUT_CAP', 'daily_budget': int(presupuesto), 'access_token': fb_token
-                                }
+                                p_as = {'name': f"{pais} - TEST {idx+1} ({item['name']})", 'campaign_id': camp_id, 'status': 'PAUSED', 'targeting': json.dumps(tgt), 'start_time': start_time_unix, 'billing_event': 'IMPRESSIONS', 'optimization_goal': 'OFFSITE_CONVERSIONS', 'promoted_object': json.dumps({'pixel_id': cfg['pixelId'], 'custom_event_type': 'PURCHASE'}), 'destination_type': 'WEBSITE', 'attribution_spec': attr, 'bid_strategy': 'LOWEST_COST_WITHOUT_CAP', 'daily_budget': int(presupuesto), 'access_token': fb_token}
                                 res_as = requests.post(f"{BASE_URL}/{curr_acc_id}/adsets", data=p_as).json()
                                 manager.create_ad_logic(curr_acc_id, res_as['id'], media, url_final, h_final, b_final, cta, cfg['pageId'], item['name'])
                                 time.sleep(1)
-                        
-                        # Estrategia NORMAL
                         else:
                             st.write(f"➡️ Creando Conjunto en {pais}...")
-                            p_as = {
-                                'name': f"{pais} - OPEN", 'campaign_id': camp_id, 'status': 'PAUSED',
-                                'targeting': json.dumps(tgt), 'start_time': start_time_unix,
-                                'billing_event': 'IMPRESSIONS', 'optimization_goal': 'OFFSITE_CONVERSIONS',
-                                'promoted_object': json.dumps({'pixel_id': cfg['pixelId'], 'custom_event_type': 'PURCHASE'}),
-                                'destination_type': 'WEBSITE', 'attribution_spec': attr, 'bid_strategy': 'LOWEST_COST_WITHOUT_CAP', 'access_token': fb_token
-                            }
+                            p_as = {'name': f"{pais} - OPEN", 'campaign_id': camp_id, 'status': 'PAUSED', 'targeting': json.dumps(tgt), 'start_time': start_time_unix, 'billing_event': 'IMPRESSIONS', 'optimization_goal': 'OFFSITE_CONVERSIONS', 'promoted_object': json.dumps({'pixel_id': cfg['pixelId'], 'custom_event_type': 'PURCHASE'}), 'destination_type': 'WEBSITE', 'attribution_spec': attr, 'bid_strategy': 'LOWEST_COST_WITHOUT_CAP', 'access_token': fb_token}
                             if "ABO" in tipo_puja: p_as['daily_budget'] = int(presupuesto)
                             res_as = requests.post(f"{BASE_URL}/{curr_acc_id}/adsets", data=p_as).json()
-                            
                             for item in files_to_process:
                                 media = manager.upload_media(curr_acc_id, file_obj=item.get("obj"), file_url=item.get("url"), file_type=item["mime"])
                                 manager.create_ad_logic(curr_acc_id, res_as['id'], media, url_final, h_final, b_final, cta, cfg['pageId'], item['name'])
                                 time.sleep(1)
-                        
                         st.success(f"✅ {pais} Listo.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
+                except Exception as e: st.error(f"Error: {e}")
             st.balloons()
 
-# ==============================================================================
-# 👁️ MÓDULO 2: EL VIGILANTE (ANALYTICS)
-# ==============================================================================
+# --- MÓDULO VIGILANTE ---
 elif menu == "👁️ El Vigilante (Datos)":
     st.title(f"👁️ El Vigilante: {acc_name}")
     
@@ -334,36 +311,49 @@ elif menu == "👁️ El Vigilante (Datos)":
     
     if st.button("🔄 Analizar Datos"):
         with st.spinner("Trayendo datos de Facebook..."):
-            data = manager.get_insights(nivel, ad_account_id, date_preset=rango_fecha)
+            raw_data = manager.get_insights(nivel, ad_account_id, date_preset=rango_fecha)
             
-            if not data:
+            if not raw_data:
                 st.warning("No hay datos para mostrar.")
             else:
                 rows = []
-                for item in data:
+                # PROCESAMIENTO DE LA NUEVA ESTRUCTURA
+                for item in raw_data:
+                    # Datos básicos del objeto
+                    obj_id = item.get("id")
+                    obj_name = item.get("name")
+                    obj_status = item.get("status")
+                    
+                    # Insights (Vienen anidados ahora)
+                    insights_data = item.get("insights", {}).get("data", [{}])[0]
+                    
+                    spend = float(insights_data.get("spend", 0))
+                    impressions = int(insights_data.get("impressions", 0))
+                    clicks = int(insights_data.get("clicks", 0))
+                    
+                    # Ventas
                     purchases = 0
                     purchases_val = 0.0
-                    
-                    if "actions" in item:
-                        for act in item["actions"]:
+                    if "actions" in insights_data:
+                        for act in insights_data["actions"]:
                             if act["action_type"] == "purchase": purchases = int(act["value"])
-                    if "action_values" in item:
-                        for val in item["action_values"]:
+                    if "action_values" in insights_data:
+                        for val in insights_data["action_values"]:
                             if val["action_type"] == "purchase": purchases_val = float(val["value"])
                     
-                    spend = float(item.get("spend", 0))
                     cpa = spend / purchases if purchases > 0 else 0
                     roas = purchases_val / spend if spend > 0 else 0
+                    ctr = float(insights_data.get("ctr", 0))
                     
                     rows.append({
-                        "ID": item["id"],
-                        "Estado": item.get("status", "UNKNOWN"),
-                        "Nombre": item["name"],
+                        "ID": obj_id,
+                        "Estado": obj_status,
+                        "Nombre": obj_name,
                         "Gasto": spend,
                         "Ventas": purchases,
                         "CPA": cpa,
                         "ROAS": roas,
-                        "CTR": float(item.get("ctr", 0))
+                        "CTR": ctr
                     })
                 
                 df = pd.DataFrame(rows)
