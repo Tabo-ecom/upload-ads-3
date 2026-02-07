@@ -113,21 +113,15 @@ class FBAdsManager:
         if "id" not in res_ad: raise Exception(f"Error Anuncio: {res_ad.get('error', {}).get('message')}")
         return True
 
-    # --- VIGILANTE (CORREGIDO FINAL) ---
+    # --- VIGILANTE ---
     def get_insights_custom(self, level, acc_id, time_params):
         endpoint = f"{level}s"
-        
-        # 1. Definimos los campos base en una LISTA (para evitar duplicados accidentales)
         fields_list = ["id", "name", "status"]
-        
-        # Si NO estamos viendo campañas, pedimos el nombre de la campaña padre
         if level != "campaign":
             fields_list.append("campaign_name")
             
-        # 2. Definimos las métricas internas que queremos
         metrics = "spend,impressions,clicks,actions,action_values,cpc,ctr,cpm"
         
-        # 3. Construimos el campo 'insights' (UNA SOLA VEZ)
         if 'time_range' in time_params:
             t_val = json.dumps(time_params['time_range'])
             insights_field = f"insights.time_range({t_val}){{{metrics}}}"
@@ -135,19 +129,15 @@ class FBAdsManager:
             t_val = time_params['date_preset']
             insights_field = f"insights.date_preset({t_val}){{{metrics}}}"
 
-        # 4. Agregamos el campo insights a la lista y unimos con comas
         fields_list.append(insights_field)
         final_fields_str = ",".join(fields_list)
         
-        # 5. Ejecutamos la petición
         params = {
             "access_token": self.token,
             "fields": final_fields_str,
             "limit": 500
         }
-        
         res = requests.get(f"{BASE_URL}/{acc_id}/{endpoint}", params=params).json()
-        
         if "error" in res: 
             st.error(f"Error API: {res['error']['message']}")
             return []
@@ -319,7 +309,6 @@ elif menu == "👁️ El Vigilante (Datos)":
         st.warning("Conecta tu cuenta primero.")
         st.stop()
         
-    # --- FILTROS MEJORADOS ---
     col_f1, col_f2 = st.columns([2, 1])
     
     with col_f1:
@@ -394,6 +383,10 @@ elif menu == "👁️ El Vigilante (Datos)":
                     })
                 
                 df = pd.DataFrame(rows)
+                
+                # --- FILTRO NUEVO: SOLO ACTIVAS O CON GASTO ---
+                df = df[(df['Estado'] == 'ACTIVE') | (df['Gasto'] > 0)]
+                # ----------------------------------------------
                 
                 st.markdown("### 📊 Resumen Financiero")
                 k1, k2, k3, k4, k5 = st.columns(5)
